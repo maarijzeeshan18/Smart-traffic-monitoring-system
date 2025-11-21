@@ -1,0 +1,437 @@
+import streamlit as st
+import pandas as pd
+import random
+import time
+from datetime import datetime
+
+# -------------------------
+# Constants (from C)
+# -------------------------
+MAX_ROADS = 10
+BAR_WIDTH = 40
+
+DEFAULT_ROAD_NAMES = [
+    "University road","Rashid minhas road","Sharah-e-faisal","Jinnah avenue",
+    "National highway","Sharah-e-bhutto","Shahid afridi street",
+    "Nishter road","Muhammad ali jinnah road","Chundrigar road"
+]
+
+# -------------------------
+# Road data structure
+# -------------------------
+def make_road(name="Unnamed"):
+    return {
+        "name": name[:39],
+        "vehicles": 0,
+        "speed": 0.0,
+        "weather": "Clear",
+        "trafficLoad": 0.0,
+        "avgDelay": 0.0,
+        "congestionIndex": 0.0,
+        "riskFactor": 0.0,
+        "trafficScore": 0.0,
+        "congestion": 0,
+        "riskLevel": 0,    # 0=Low,1=Med,2=High
+        "alertCongestion": 0,
+        "alertHighRisk": 0,
+        "alertLowSpeed": 0,
+        "alertBadWeather": 0
+    }
+
+# -------------------------
+# Utilities (converted)
+# -------------------------
+def clamp_int(v, lo, hi):
+    if v < lo: return lo
+    if v > hi: return hi
+    return v
+
+def current_timestamp_str():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# -------------------------
+# Alert & metric functions (translated from C)
+# -------------------------
+def set_alerts(r):
+    r["alertCongestion"] = 1 if r["congestionIndex"] >= 70 else 0
+    r["alertHighRisk"] = 1 if r["riskFactor"] >= 22.0 else 0
+    r["alertLowSpeed"] = 1 if r["speed"] < 20 else 0
+    r["alertBadWeather"] = 1 if r["weather"] in ("Rainy", "Foggy", "Storm") else 0
+
+def calculate_metrics(r, timeOfDay):
+    # time constants
+    if timeOfDay == 1:
+        timeFactor, baseDelay, timeRisk = 1.25, 8.0, 1.0
+    elif timeOfDay == 2:
+        timeFactor, baseDelay, timeRisk = 1.0, 4.0, 0.5
+    else:
+        timeFactor, baseDelay, timeRisk = 1.6, 18.0, 2.5
+
+    # weather
+    weatherFactor = 1.0
+    weatherDelay = 0.0
+    weatherRisk = 0.0
+    w = r["weather"]
+    if w == "Clear":
+        weatherFactor = 1.0
+    elif w == "Rainy":
+        weatherFactor = 1.25; weatherDelay = 5; weatherRisk = 3
+    elif w == "Foggy":
+        weatherFactor = 1.4; weatherDelay = 8; weatherRisk = 5
+    elif w == "Storm":
+        weatherFactor = 1.6; weatherDelay = 12; weatherRisk = 7
+    else:
+        # Heat
+        weatherFactor = 1.05; weatherRisk = 1
+
+    # trafficLoad
+    roadCapacity = 300.0
+    r["trafficLoad"] = (r["vehicles"] * timeFactor * weatherFactor / roadCapacity) * 100.0
+    if r["trafficLoad"] > 100.0: r["trafficLoad"] = 100.0
+
+    # avgDelay
+    r["avgDelay"] = baseDelay * (1 + r["trafficLoad"] / 100.0) + weatherDelay
+
+    # congestionIndex
+    density = (r["vehicles"] / 400.0) * 60.0
+    speedFactor = r["speed"] / 10.0
+    r["congestionIndex"] = r["trafficLoad"] * 0.6 + density - speedFactor
+    if r["congestionIndex"] < 0: r["congestionIndex"] = 0.0
+
+    # riskFactor
+    if r["vehicles"] < 80:
+        laneRisk = 1.0
+    elif r["vehicles"] < 200:
+        laneRisk = 2.0
+    else:
+        laneRisk = 3.0
+
+    speedVar = 55.0 - r["speed"]
+    if speedVar < 0: speedVar = 0.0
+
+    trafficSensitivity = 0.1 if r["vehicles"] < 30 else 1.0
+
+    r["riskFactor"] = density * 1.6 + laneRisk * 3.0 + (timeRisk * trafficSensitivity) + speedVar / 10.0 + weatherRisk
+
+    # trafficScore
+    r["trafficScore"] = r["trafficLoad"] * 0.4 + r["congestionIndex"] * 0.3 + r["riskFactor"] * 0.2 + r["avgDelay"] * 0.1
+
+    # congestion integer for charts
+    r["congestion"] = int(r["congestionIndex"])
+    if r["congestion"] < 0: r["congestion"] = 0
+    if r["congestion"] > 100: r["congestion"] = 100
+
+    # risk level thresholds
+    if r["riskFactor"] >= 22.0:
+        r["riskLevel"] = 2
+    elif r["riskFactor"] >= 8.0:
+        r["riskLevel"] = 1
+    else:
+        r["riskLevel"] = 0
+
+    # alerts
+    set_alerts(r)
+
+# -------------------------
+# Simulation (converted)
+# -------------------------
+def simulate_once(roads, n, timeOfDay):
+    for i in range(n):
+        if timeOfDay == 1:
+            baseVehicles = 60
+        elif timeOfDay == 2:
+            baseVehicles = 30
+        else:
+            baseVehicles = 120
+
+        variation = random.randint(-30, 30)
+        roads[i]["vehicles"] = clamp_int(baseVehicles + variation, 0, 1000)
+
+        speed = 75.0 - (roads[i]["vehicles"] / 10.0) + float(random.randint(-5,5))
+        if speed < 6.0: speed = 6.0
+
+        weatherPenalty = 0.0
+        if roads[i]["weather"] == "Rainy": weatherPenalty = 7
+        elif roads[i]["weather"] == "Foggy": weatherPenalty = 12
+        elif roads[i]["weather"] == "Storm": weatherPenalty = 18
+        elif roads[i]["weather"] == "Heat": weatherPenalty = 3
+
+        speed -= weatherPenalty
+        if speed < 3.0: speed = 3.0
+
+        roads[i]["speed"] = float(speed)
+
+        # recalc metrics
+        calculate_metrics(roads[i], timeOfDay)
+
+# -------------------------
+# Printing / Summaries (converted to streamlit outputs)
+# -------------------------
+def busiest_and_summary(roads, n):
+    busiest = 0
+    highestRisk = 0
+    total = 0
+    for i in range(n):
+        if roads[i]["vehicles"] > roads[busiest]["vehicles"]:
+            busiest = i
+        if roads[i]["riskLevel"] > roads[highestRisk]["riskLevel"]:
+            highestRisk = i
+        total += roads[i]["congestion"]
+    avg = total / float(n) if n>0 else 0.0
+    if avg < 33:
+        overall = "LOW"
+    elif avg < 66:
+        overall = "MEDIUM"
+    else:
+        overall = "HIGH"
+    return {
+        "overall": overall,
+        "busiest_name": roads[busiest]["name"],
+        "busiest_vehicles": roads[busiest]["vehicles"],
+        "highest_risk_name": roads[highestRisk]["name"],
+        "highest_risk_level": roads[highestRisk]["riskLevel"],
+        "avg_congestion": avg
+    }
+
+def generate_suggestions(roads, n):
+    suggs = []
+    for i in range(n):
+        r = roads[i]
+        parts = []
+        if r["congestionIndex"] > 70:
+            parts.append("[Consider rerouting vehicles]")
+        if r["riskFactor"] > 21.5:
+            parts.append("[Increase patrolling / HIGH RISK]")
+        if r["avgDelay"] > 15:
+            parts.append("[Optimize signal timing]")
+        if r["trafficScore"] > 80:
+            parts.append("[Immediate attention required]")
+        if not parts:
+            parts = ["Traffic normal"]
+        suggs.append((r["name"], " ".join(parts)))
+    return suggs
+
+# -------------------------
+# Visualization helpers
+# -------------------------
+def ascii_bar(percent, width=BAR_WIDTH):
+    if percent < 0: percent = 0
+    if percent > 100: percent = 100
+    filled = int(percent * width / 100)
+    return "▮" * filled + " " * (width - filled)
+
+# -------------------------
+# Session state and initialization
+# -------------------------
+if "roads" not in st.session_state:
+    st.session_state.roads = [make_road(DEFAULT_ROAD_NAMES[i]) for i in range(5)]  # default n=5
+    st.session_state.n = 5
+    # initial calculation for defaults
+    for r in st.session_state.roads[:st.session_state.n]:
+        calculate_metrics(r, 2)  # default Noon
+
+st.set_page_config(page_title="Smart Traffic Monitoring", layout="wide")
+st.title("🚦 Smart Traffic Monitoring System — Converted from C")
+
+# -------------------------
+# Sidebar / Menu
+# -------------------------
+menu = st.sidebar.selectbox("Menu", [
+    "Dashboard",
+    "Enter Road Data (Manual)",
+    "Simulate Traffic",
+    "Analyze & Visualize (Detailed)",
+    "Smart Chart",
+    "Export Summary (text)"
+])
+
+# -------------------------
+# Dashboard
+# -------------------------
+if menu == "Dashboard":
+    st.header("Dashboard")
+    n = st.session_state.n
+    roads = st.session_state.roads
+    df = pd.DataFrame([{
+        "No": i+1,
+        "Road": roads[i]["name"],
+        "Vehicles": roads[i]["vehicles"],
+        "Speed": round(roads[i]["speed"],1),
+        "Congestion": roads[i]["congestion"],
+        "Risk": ("HIGH" if roads[i]["riskLevel"]==2 else ("MED" if roads[i]["riskLevel"]==1 else "LOW"))
+    } for i in range(n)])
+    st.table(df)
+
+    summary = busiest_and_summary(roads, n)
+    st.markdown(f"**Overall Traffic Level:** {summary['overall']}")
+    st.markdown(f"**Busiest Road:** {summary['busiest_name']} ({summary['busiest_vehicles']} vehicles)")
+    risk_label = {0:"LOW",1:"MED",2:"HIGH"}[summary["highest_risk_level"]]
+    st.markdown(f"**Highest Risk Road:** {summary['highest_risk_name']} (Risk: {risk_label})")
+
+# -------------------------
+# Enter Road Data (Manual)
+# -------------------------
+elif menu == "Enter Road Data (Manual)":
+    st.header("Enter Road Data (Manual)")
+    # choose number of roads
+    num = st.number_input("Number of roads to enter (1-10)", min_value=1, max_value=MAX_ROADS, value=st.session_state.n, step=1)
+    num = int(num)
+    st.session_state.n = num
+    # allow time of day selection
+    tod = st.radio("Time of Day", ("Morning", "Noon", "Evening"))
+    tod_map = {"Morning":1, "Noon":2, "Evening":3}
+    tod_val = tod_map[tod]
+    st.write(f"Selected time-of-day: {tod} (code {tod_val})")
+
+    # create forms for each road
+    roads_list = st.session_state.roads
+    # ensure list has enough elements
+    while len(roads_list) < num:
+        roads_list.append(make_road(DEFAULT_ROAD_NAMES[len(roads_list) % len(DEFAULT_ROAD_NAMES)]))
+
+    for i in range(num):
+        st.subheader(f"Road {i+1}")
+        name = st.text_input(f"Name (Road {i+1})", value=roads_list[i]["name"], key=f"name_{i}")
+        vehicles = st.number_input(f"Vehicles (0-1000) for Road {i+1}", min_value=0, max_value=1000, value=int(roads_list[i]["vehicles"]), key=f"veh_{i}")
+        speed = st.number_input(f"Avg Speed (km/h) for Road {i+1}", min_value=0.0, max_value=300.0, value=float(roads_list[i]["speed"]), step=0.1, key=f"spd_{i}")
+        weather_choice = st.selectbox(f"Weather for Road {i+1}", ("Clear","Rainy","Foggy","Storm","Heat"), index=["Clear","Rainy","Foggy","Storm","Heat"].index(roads_list[i]["weather"]) if roads_list[i]["weather"] in ["Clear","Rainy","Foggy","Storm","Heat"] else 0, key=f"we_{i}")
+
+        # update road dict
+        roads_list[i]["name"] = name[:39]
+        roads_list[i]["vehicles"] = int(vehicles)
+        roads_list[i]["speed"] = float(speed)
+        roads_list[i]["weather"] = weather_choice
+        # calculate metrics immediately
+        calculate_metrics(roads_list[i], tod_val)
+
+    st.session_state.roads = roads_list
+    st.success("Road data recorded and metrics calculated (see Smart Chart or Analyze).")
+
+# -------------------------
+# Simulate Traffic
+# -------------------------
+elif menu == "Simulate Traffic":
+    st.header("Simulate Traffic")
+    n = st.session_state.n
+    roads = st.session_state.roads
+    tod = st.radio("Time of Day for Simulation", ("Morning","Noon","Evening"), index=1)
+    tod_map = {"Morning":1, "Noon":2, "Evening":3}
+    if st.button("Run Single Simulation"):
+        simulate_once(roads, n, tod_map[tod])
+        st.session_state.roads = roads
+        st.success("Simulation complete. Metrics updated.")
+
+# -------------------------
+# Analyze & Visualize (Detailed)
+# -------------------------
+elif menu == "Analyze & Visualize (Detailed)":
+    st.header("Traffic Analysis (Detailed)")
+    n = st.session_state.n
+    roads = st.session_state.roads
+
+    if n == 0:
+        st.info("No roads available.")
+    else:
+        # Show detailed table
+        rows = []
+        for i in range(n):
+            r = roads[i]
+            rows.append({
+                "No": i+1,
+                "Road": r["name"],
+                "Vehicles": r["vehicles"],
+                "Speed": round(r["speed"],1),
+                "TrafficLoad(%)": round(r["trafficLoad"],1),
+                "CI": round(r["congestionIndex"],1),
+                "Delay": round(r["avgDelay"],1),
+                "RiskFactor": round(r["riskFactor"],1),
+                "TrafficScore": round(r["trafficScore"],1),
+                "CongestionBar": ascii_bar(r["congestion"])
+            })
+        df = pd.DataFrame(rows)
+        # display table CSV-like
+        st.dataframe(df.drop(columns=["CongestionBar"]))
+        st.markdown("**Congestion Bars**")
+        for i in range(n):
+            r = roads[i]
+            st.write(f"{i+1}. {r['name']} | {ascii_bar(r['congestion'])} | Congestion: {r['congestion']} | Risk: { 'HIGH' if r['riskLevel']==2 else ('MED' if r['riskLevel']==1 else 'LOW') }")
+            # show alerts
+            alerts = []
+            if r["alertCongestion"]: alerts.append("High Congestion")
+            if r["alertHighRisk"]: alerts.append("High Risk")
+            if r["alertLowSpeed"]: alerts.append("Low Speed")
+            if r["alertBadWeather"]: alerts.append(f"Bad Weather: {r['weather']}")
+            if alerts:
+                st.error("Alerts: " + ", ".join(alerts))
+
+        # summary & suggestions
+        summary = busiest_and_summary(roads, n)
+        st.subheader("Summary")
+        st.write(f"Overall Traffic Level: **{summary['overall']}**")
+        st.write(f"Busiest Road: **{summary['busiest_name']}** ({summary['busiest_vehicles']} vehicles)")
+        risk_label = {0:"LOW",1:"MED",2:"HIGH"}[summary["highest_risk_level"]]
+        st.write(f"Highest Risk Road: **{summary['highest_risk_name']}** (Risk: **{risk_label}**)")
+        st.write("")
+
+        st.subheader("Suggestions / Recommendations")
+        suggestions = generate_suggestions(roads, n)
+        for name, text in suggestions:
+            st.write(f"**{name}**: {text}")
+
+# -------------------------
+# Smart Chart (compact table)
+# -------------------------
+elif menu == "Smart Chart":
+    st.header("Smart Chart (Compact Snapshot)")
+    n = st.session_state.n
+    roads = st.session_state.roads
+    if n == 0:
+        st.info("No roads.")
+    else:
+        st.table(pd.DataFrame([{
+            "No": i+1,
+            "Road": roads[i]["name"],
+            "Vehicles": roads[i]["vehicles"],
+            "Speed": round(roads[i]["speed"],1),
+            "Congestion": roads[i]["congestion"],
+            "Risk": ("HIGH" if roads[i]["riskLevel"]==2 else ("MED" if roads[i]["riskLevel"]==1 else "LOW"))
+        } for i in range(n)]))
+
+# -------------------------
+# Export Summary (text)
+# -------------------------
+elif menu == "Export Summary (text)":
+    st.header("Export a text summary for current roads")
+    n = st.session_state.n
+    roads = st.session_state.roads
+    if n == 0:
+        st.info("No roads to summarize.")
+    else:
+        if st.button("Create & Open Summary File"):
+            # build summary content exactly like the C printSummary/printSuggestions
+            lines = []
+            lines.append("------------------ SUMMARY ------------------")
+            summary = busiest_and_summary(roads, n)
+            lines.append(f"Overall Traffic Level: {summary['overall']}")
+            lines.append(f"Busiest Road: {summary['busiest_name']} ({summary['busiest_vehicles']} vehicles)")
+            risk_label = {0:"LOW",1:"MED",2:"HIGH"}[summary["highest_risk_level"]]
+            lines.append(f"Highest Risk Road: {summary['highest_risk_name']} (Risk: {risk_label})")
+            lines.append("---------------------------------------------")
+            lines.append("")
+            lines.append("----- SUGGESTIONS / RECOMMENDATIONS -----")
+            suggestions = generate_suggestions(roads, n)
+            for name, text in suggestions:
+                lines.append(f"{name}: {text}")
+            lines.append("----------------------------------------")
+            content = "\n".join(lines)
+
+            fname = f"traffic_summary_{current_timestamp_str()}.txt"
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            st.success(f"Summary written to `{fname}` in current folder.")
+            # Open and display
+            with open(fname, "r", encoding="utf-8") as f:
+                txt = f.read()
+            st.text_area("Summary File Content", txt, height=300)
+            st.download_button("Download Summary File", txt, file_name=fname, mime="text/plain")
