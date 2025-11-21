@@ -1,0 +1,569 @@
+/***************************************************************
+  PART 1 - Core Setup & Initialization (AMNA ASIF)
+***************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <windows.h>
+#include <conio.h>
+
+#define MAX_ROADS 10        // Maximum number of roads that can be tracked
+#define BAR_WIDTH 40        // Width of visual congestion bar
+
+
+/* Structure to hold all relevant data for a single road */
+typedef struct {
+    char name[40];             // Road name
+    int vehicles;              // Current number of vehicles on the road
+    float speed;               // Average speed of traffic
+    char weather[16];          // Current weather condition
+
+    float trafficLoad;         // Traffic load in percentage
+    float avgDelay;            // Average traffic delay in minutes
+    float congestionIndex;     // Calculated congestion index
+    float riskFactor;          // Calculated risk factor for traffic incidents
+    float trafficScore;        // Overall score combining load, risk, congestion, delay
+
+    int congestion;            // Categorized congestion level (0-100)
+    int riskLevel;             // Categorized risk level (0=Low, 1=Medium, 2=High)
+
+    int alertCongestion;       // Flag for high congestion
+    int alertHighRisk;         // Flag for high risk
+    int alertLowSpeed;         // Flag for low average speed
+    int alertBadWeather;       // Flag for dangerous weather
+
+} Road;
+
+
+/* Set console text color for Windows output */
+void setColor(int attr){
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(h, attr);
+}
+
+/* Clear the console screen */
+void clearScreen(void){
+    system("cls");
+}
+
+/* Display the program title banner */
+void titleScreen(void){
+    setColor(11);
+    printf("+----------------------------------------------------------------+\n");
+    printf("¦           SMART TRAFFIC MONITORING SYSTEM                      ¦\n");
+    printf("+----------------------------------------------------------------+\n");
+    setColor(7);
+}
+
+/* Display a small animated loading message */
+void loadingDots(const char *msg, int ms, int dots){
+    printf("%s", msg);
+    int i;
+    for(i=0;i<dots;i++){
+        printf(".");
+        fflush(stdout);
+        Sleep(ms);
+    }
+    printf(" Done!\n");
+}
+
+/* Initialize roads with default names and zeroed metrics */
+void initDefaultRoads(Road roads[], int n){
+    const char *names[MAX_ROADS] = {
+        "University road","Rashid minhas road","Sharah-e-faisal","Jinnah avenue",
+        "National highway","Sharah-e-bhutto","Shahid afridi street",
+        "Nishter road","Muhammad ali jinnah road","Chundrigar road"
+    };
+    
+    int i;
+    for( i=0;i<n;i++){
+        strncpy(roads[i].name, names[i], 39);
+        roads[i].name[39] = '\0';
+
+        /* Initialize all metrics and flags to default values */
+        roads[i].vehicles = 0;
+        roads[i].speed = 0;
+        strcpy(roads[i].weather, "Clear");
+
+        roads[i].trafficLoad = 0;
+        roads[i].avgDelay = 0;
+        roads[i].congestionIndex = 0;
+        roads[i].riskFactor = 0;
+        roads[i].trafficScore = 0;
+
+        roads[i].congestion = 0;
+        roads[i].riskLevel = 0;
+
+        roads[i].alertCongestion = 0;
+        roads[i].alertHighRisk = 0;
+        roads[i].alertLowSpeed = 0;
+        roads[i].alertBadWeather = 0;
+    }
+}
+
+/***************************************************************
+    PART 2 - Input & Time Selection (S.AYMEN ALI)
+***************************************************************/
+
+/* Ensure integer value stays within a specified range */
+int clampInt(int v, int lo, int hi){
+    if(v < lo) return lo;
+    if(v > hi) return hi;
+    return v;
+}
+
+/* Safe integer input */
+int safeIntInput(){
+    char buf[32];
+    int val;
+    while(1){
+        if(fgets(buf,sizeof(buf),stdin)){
+            if(sscanf(buf,"%d",&val)==1)
+                return val;
+            else
+                printf("Invalid input, try again: ");
+        }
+    }
+}
+
+/* Safe float input */
+float safeFloatInput(){
+    char buf[32];
+    float val;
+    while(1){
+        if(fgets(buf,sizeof(buf),stdin)){
+            if(sscanf(buf,"%f",&val)==1)
+                return val;
+            else
+                printf("Invalid input, try again: ");
+        }
+    }
+}
+
+
+void calculateMetrics(Road *r, int timeOfDay);
+
+/* Allow user to manually enter road data and metrics */
+void enterRoads(Road roads[], int *n){
+    clearScreen();
+    titleScreen();
+
+    setColor(10);
+    printf("Enter number of roads (1-%d): ", MAX_ROADS);
+    setColor(7);
+
+    *n = clampInt(safeIntInput(),1,MAX_ROADS);
+
+
+    int timeOfDay = chooseTimeOfDay();
+
+    /* Loop to input details for each road */
+    int i;
+    for(i=0;i<*n;i++){
+        printf("\n--- Road %d ---\n", i+1);
+
+        printf("Name: ");
+        fgets(roads[i].name, 40, stdin);
+        roads[i].name[strcspn(roads[i].name, "\n")] = 0;
+
+        printf("Vehicles: ");
+        roads[i].vehicles = clampInt(safeIntInput(),0,1000);
+
+        printf("Avg Speed: ");
+        roads[i].speed = clampInt(safeFloatInput(),0,200);
+
+        printf("Weather (1.Clear 2.Rainy 3.Foggy 4.Storm 5.Heat): ");
+        int w = clampInt(safeIntInput(),1,5);
+
+        const char *weatherList[] = {"Clear","Rainy","Foggy","Storm","Heat"};
+        strcpy(roads[i].weather, weatherList[w-1]);
+
+
+        calculateMetrics(&roads[i], timeOfDay);
+    }
+
+    loadingDots("Recording data", 150, 4);
+}
+
+/* Allow user to select the time of day for traffic simulation */
+int chooseTimeOfDay(void){
+    setColor(14);
+    printf("\nChoose time for data analysis:\n1.Morning\n2.Noon\n3.Evening\n");
+    setColor(7);
+
+    int t = clampInt(safeIntInput(),1,3);
+    return t;
+}
+
+/***************************************************************
+    PART 3 - Simulation & Metrics (MAARIJ ZEESHAN)
+***************************************************************/
+
+/* Set alert flags for road based on thresholds */
+void setAlerts(Road *r) {
+    r->alertCongestion = (r->congestionIndex >= 70) ? 1 : 0;
+    r->alertHighRisk   = (r->riskFactor >= 15) ? 1 : 0;
+    r->alertLowSpeed   = (r->speed < 20) ? 1 : 0;
+    r->alertBadWeather = (strcmp(r->weather,"Rainy")==0 || strcmp(r->weather,"Foggy")==0 || strcmp(r->weather,"Storm")==0) ? 1 : 0;
+}
+
+void calculateMetrics(Road *r, int timeOfDay) {
+
+    // Traffic load
+    float roadCapacity = 300.0f;
+    float timeFactor;
+    if (timeOfDay == 1) timeFactor = 1.25f;
+    else if (timeOfDay == 2) timeFactor = 1.0f;
+    else timeFactor = 1.6f;
+
+    float weatherFactor;
+    if (strcmp(r->weather, "Clear") == 0) weatherFactor = 1.0f;
+    else if (strcmp(r->weather, "Rainy") == 0) weatherFactor = 1.25f;
+    else if (strcmp(r->weather, "Foggy") == 0) weatherFactor = 1.4f;
+    else if (strcmp(r->weather, "Storm") == 0) weatherFactor = 1.6f;
+    else weatherFactor = 1.05f;
+
+    r->trafficLoad = (r->vehicles * timeFactor * weatherFactor / roadCapacity) * 100;
+    if (r->trafficLoad > 100) r->trafficLoad = 100;
+
+    // Average delay
+    int baseDelay;
+    if (timeOfDay == 1) baseDelay = 8;
+    else if (timeOfDay == 2) baseDelay = 4;
+    else baseDelay = 18;
+
+    float weatherDelay = 0;
+    if (strcmp(r->weather, "Storm") == 0) weatherDelay = 12;
+    else if (strcmp(r->weather, "Foggy") == 0) weatherDelay = 8;
+    else if (strcmp(r->weather, "Rainy") == 0) weatherDelay = 5;
+
+    r->avgDelay = baseDelay * (1 + r->trafficLoad / 100.0f) + weatherDelay;
+
+    // Congestion index
+    float density = (r->vehicles / 400.0f) * 60;
+    float speedFactor = r->speed / 2;
+    r->congestionIndex = r->trafficLoad * 0.6f + density - speedFactor;
+    if (r->congestionIndex < 0) r->congestionIndex = 0;
+
+    // Risk factor
+    float timeRisk;
+    if (timeOfDay == 1) timeRisk = 1;
+    else if (timeOfDay == 2) timeRisk = 0.5f;
+    else timeRisk = 2.5f;
+
+    float laneRisk;
+    if (r->vehicles < 80) laneRisk = 1;
+    else if (r->vehicles < 200) laneRisk = 2;
+    else laneRisk = 3;
+
+    float speedVar = 55 - r->speed;
+    if (speedVar < 0) speedVar = 0;
+
+    float weatherRisk;
+    if (strcmp(r->weather, "Rainy") == 0) weatherRisk = 3;
+    else if (strcmp(r->weather, "Foggy") == 0) weatherRisk = 5;
+    else if (strcmp(r->weather, "Storm") == 0) weatherRisk = 7;
+    else if (strcmp(r->weather, "Heat") == 0) weatherRisk = 1;
+    else weatherRisk = 0;
+
+    r->riskFactor = density * 1.6f + laneRisk * 3 + timeRisk + speedVar / 10 + weatherRisk;
+
+    // Overall traffic score
+    r->trafficScore = r->trafficLoad * 0.4f +
+                             r->congestionIndex * 0.3f +
+                             r->riskFactor * 0.2f +
+                             r->avgDelay * 0.1f;
+
+    // Categorize congestion and risk
+    r->congestion = (int)r->trafficLoad;
+    if (r->congestion > 100) r->congestion = 100;
+
+    if (r->riskFactor >= 18) r->riskLevel = 2;
+    else if (r->riskFactor >= 8) r->riskLevel = 1;
+    else r->riskLevel = 0;
+
+    // Set alerts
+    setAlerts(r);
+}
+
+
+/* Run one simulation for all roads */
+void simulateOnce(Road roads[], int n, int timeOfDay) {
+    int i;
+    for ( i = 0; i < n; i++) {
+
+        // Determine number of vehicles based on time of day (GENERATING INPUT)
+        int baseVehicles;
+        if (timeOfDay == 1) baseVehicles = 60;
+        else if (timeOfDay == 2) baseVehicles = 30;
+        else baseVehicles = 120;
+
+        int variation = rand() % 61 - 30;
+        roads[i].vehicles = clampInt(baseVehicles + variation, 0, 1000);
+
+        // Calculate base speed (GENERATING INPUT)
+        float speed = 75 - (roads[i].vehicles / 10.0f) + (rand() % 11 - 5);
+        if (speed < 6) speed = 6;
+        roads[i].speed = speed;
+
+        // Weather penalties (APPLYING INPUT ADJUSTMENT)
+        float weatherPenalty = 0;
+        if (strcmp(roads[i].weather, "Rainy") == 0) weatherPenalty = 7;
+        else if (strcmp(roads[i].weather, "Foggy") == 0) weatherPenalty = 12;
+        else if (strcmp(roads[i].weather, "Storm") == 0) weatherPenalty = 18;
+        else if (strcmp(roads[i].weather, "Heat") == 0) weatherPenalty = 3;
+
+        roads[i].speed -= weatherPenalty;
+        if (roads[i].speed < 3) roads[i].speed = 3;
+
+        // **CHANGE 3.2: Call calculateMetrics after simulation input generation**
+        calculateMetrics(&roads[i], timeOfDay);
+    }
+}
+
+/***************************************************************
+    PART 4 - DISPLAY & VISUALIZATION (S.ZUJAJA TUN NOOR HASHMI)
+***************************************************************/
+
+void drawBarAnimated(int percent, int color, int fast){
+    int len = percent * BAR_WIDTH / 100;
+    if(len < 0) len = 0;
+    if(len > BAR_WIDTH) len = BAR_WIDTH;
+
+    setColor(color);
+    int i;
+    for(i=0;i<len;i++){
+        printf("¦");
+        if(!fast) Sleep(5);
+    }
+    setColor(7);
+    for(i=len;i<BAR_WIDTH;i++)
+        printf(" ");
+}
+
+void printSuggestions(Road roads[], int n){
+    printf("\n----- SUGGESTIONS / RECOMMENDATIONS -----\n");
+    int i;  
+    for(i=0;i<n;i++){
+        printf("%s: ", roads[i].name);
+        int hasSuggestion = 0;
+
+        if(roads[i].congestionIndex > 70){
+            printf("[Consider rerouting vehicles] ");
+            hasSuggestion = 1;
+        }
+        if(roads[i].riskFactor > 15){
+            printf("[Increase patrolling / HIGH RISK] ");
+            hasSuggestion = 1;
+        }
+        if(roads[i].avgDelay > 15){
+            printf("[Optimize signal timing] ");
+            hasSuggestion = 1;
+        }
+        if(roads[i].trafficScore > 80){
+            printf("[Immediate attention required] ");
+            hasSuggestion = 1;
+        }
+
+        if(!hasSuggestion)
+            printf("Traffic normal");
+
+        printf("\n");
+    }
+
+    printf("----------------------------------------\n");
+}
+
+void printSummary(Road roads[], int n){
+    int busiest = 0, highestRisk = 0, total = 0;
+    int i;
+    for(i=0;i<n;i++){
+        if(roads[i].vehicles > roads[busiest].vehicles)
+            busiest = i;
+
+        if(roads[i].riskLevel > roads[highestRisk].riskLevel)
+            highestRisk = i;
+
+        total += roads[i].congestion;
+    }
+
+    float avg = total / (float)n;
+
+    printf("\n------------------ SUMMARY ------------------\n");
+    printf("Overall Traffic Level: ");
+
+    if(avg < 33){ setColor(10); printf("LOW\n"); }
+    else if(avg < 66){ setColor(14); printf("MEDIUM\n"); }
+    else { setColor(12); printf("HIGH\n"); }
+
+    setColor(7);
+
+    printf("Busiest Road: %s (%d vehicles)\n",
+             roads[busiest].name, roads[busiest].vehicles);
+
+    const char *riskLabel =
+        (roads[highestRisk].riskLevel==2)?"HIGH":
+        (roads[highestRisk].riskLevel==1)?"MED":"LOW";
+
+    printf("Highest Risk Road: %s (Risk: %s)\n",
+             roads[highestRisk].name, riskLabel);
+
+    printf("---------------------------------------------\n");
+
+    printSuggestions(roads, n);
+}
+
+void printRoadTable(Road roads[], int n){
+    clearScreen();
+    titleScreen();
+
+    printf("\nCurrent Traffic Snapshot (Smart Chart):\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("%-3s %-18s %-10s %-8s %-12s %-8s\n",
+           "No","Road","Vehicles","Speed","Congestion","Risk");
+    printf("--------------------------------------------------------------------------------\n");
+
+    int i;
+    for(i=0;i<n;i++){
+        const char *riskLabel =
+            (roads[i].riskLevel==2)?"HIGH":
+            (roads[i].riskLevel==1)?"MED":"LOW";
+
+        if(roads[i].riskLevel==2) setColor(12);
+        else if(roads[i].riskLevel==1) setColor(14);
+        else setColor(10);
+
+        printf("%-3d %-18s %-10d %-8.1f %-12d %-8s\n",
+               i+1, roads[i].name, roads[i].vehicles, roads[i].speed,
+               roads[i].congestion, riskLabel);
+
+        setColor(7);
+    }
+
+    printf("--------------------------------------------------------------------------------\n");
+}
+
+void analyzeAll(Road roads[], int n){
+    clearScreen();
+    titleScreen();
+    loadingDots("Analyzing traffic and risk", 80, 6);
+
+    printf("\nTRAFFIC ANALYSIS (Detailed)\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("%-3s %-18s %-10s %-8s %-8s %-8s %-8s %-8s\n",
+           "No","Road","Vehicles","Speed","TL(%)","CI","Delay","Risk");
+    printf("--------------------------------------------------------------------------------\n");
+    int i;
+    for(i=0;i<n;i++){
+        printf("%-3d %-18s %-10d %-8.1f %-8.1f %-8.1f %-8.1f ",
+               i+1,roads[i].name,roads[i].vehicles,roads[i].speed,
+               roads[i].trafficLoad,roads[i].congestionIndex,
+               roads[i].avgDelay);
+
+        int color =
+            (roads[i].riskLevel==2)?12:
+            (roads[i].riskLevel==1)?14:10;
+
+        drawBarAnimated(roads[i].congestion, color, 1);
+
+        if(roads[i].riskLevel==2){ setColor(12); printf(" HIGH"); }
+        else if(roads[i].riskLevel==1){ setColor(14); printf(" MED "); }
+        else { setColor(10); printf(" LOW "); }
+        setColor(7);
+
+        printf("\n");
+
+        if(roads[i].alertCongestion || roads[i].alertHighRisk ||
+           roads[i].alertLowSpeed || roads[i].alertBadWeather)
+        {
+            setColor(12);
+            printf("      >>> ALERTS: ");
+            setColor(7);
+
+            if(roads[i].alertCongestion) printf("[High Congestion] ");
+            if(roads[i].alertHighRisk)  printf("[High Risk] ");
+            if(roads[i].alertLowSpeed)  printf("[Low Speed] ");
+            if(roads[i].alertBadWeather) printf("[Bad Weather: %s] ", roads[i].weather);
+
+            printf("\n");
+        }
+    }
+
+    printf("--------------------------------------------------------------------------------\n");
+
+    printSummary(roads, n);
+}
+
+void pressAnyKeyToContinue(void){
+    printf("\nPress any key...");
+    _getch();
+}
+
+/***************************************************************
+    MAIN MENU
+***************************************************************/
+
+int main_menu(void){
+    Road roads[MAX_ROADS];    
+    int n = 5;                  
+
+    srand((unsigned int)time(NULL));
+    initDefaultRoads(roads, n);
+
+    while(1){
+        clearScreen();
+        titleScreen();
+
+        setColor(10);
+        printf("\nDASHBOARD\n");
+        setColor(7);
+
+        printf("1. Enter Road Data (Manual)\n");
+        printf("2. Simulate Traffic\n");
+        printf("3. Analyze & Visualize Data (Detailed)\n");
+        printf("4. Smart Chart\n");
+        printf("5. Exit\n\n");
+
+        printf("Enter choice: ");
+        int ch = safeIntInput();
+
+        if(ch == 1){
+            enterRoads(roads, &n);
+            pressAnyKeyToContinue();
+        }
+        else if(ch == 2){
+            int tod = chooseTimeOfDay();
+            simulateOnce(roads, n, tod);
+            printf("\nSimulation complete.\n");
+            pressAnyKeyToContinue();
+        }
+        else if(ch == 3){
+            analyzeAll(roads, n);
+            pressAnyKeyToContinue();
+        }
+        else if(ch == 4){
+            printRoadTable(roads, n);
+            pressAnyKeyToContinue();
+        }
+        else if(ch == 5){
+            setColor(11);
+            printf("\nExiting... Stay Safe!\n");
+            setColor(7);
+            Sleep(600);
+            break;
+        }
+        else {
+            printf("\nInvalid choice!\n");
+            Sleep(500);
+        }
+    }
+
+    return 0;
+}
+
+/* Entry point for the program */
+int main(void){
+    return main_menu();
+}
